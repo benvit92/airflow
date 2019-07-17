@@ -70,7 +70,7 @@ from airflow.api.common.experimental.mark_tasks import (set_dag_run_state_to_run
                                                         set_dag_run_state_to_success,
                                                         set_dag_run_state_to_failed)
 from airflow.exceptions import AirflowException
-from airflow.models import BaseOperator, Connection, DagRun, errors, XCom
+from airflow.models import BaseOperator, Connection, DagRun, errors, XCom, Log, SlaMiss, DagModel
 from airflow.operators.subdag_operator import SubDagOperator
 from airflow.ti_deps.dep_context import DepContext, QUEUE_DEPS, SCHEDULER_DEPS
 from airflow.utils import timezone
@@ -98,12 +98,23 @@ current_user = airflow.login.current_user
 logout_user = airflow.login.logout_user
 
 FILTER_BY_OWNER = False
+OWNER_MODE = ''
 
 PAGE_SIZE = conf.getint('webserver', 'page_size')
 
 if conf.getboolean('webserver', 'FILTER_BY_OWNER'):
     # filter_by_owner if authentication is enabled and filter_by_owner is true
     FILTER_BY_OWNER = not current_app.config['LOGIN_DISABLED']
+    OWNER_MODE = conf.get('webserver', 'OWNER_MODE').strip().lower()
+
+
+def filter_model_entity_by_owner(model_entity, session):
+    """Function to filter given entity model by dag owners if FILTER_BY_OWNER option is set"""
+    if FILTER_BY_OWNER and OWNER_MODE == 'ldapgroup':
+        return session.query(model_entity).join(DagModel, and_(model_entity.dag_id == DagModel.dag_id)) \
+            .filter(current_user.is_superuser() or DagModel.owners in current_user.ldap_groups)
+    else:
+        return session.query(model_entity)
 
 
 def dag_link(v, c, m, p):
@@ -262,6 +273,25 @@ attr_renderer = {
         lexers.PythonLexer,
     ),
 }
+
+
+def ldap_group_required(f):
+    """Decorator for views requiring to be dag owner to access"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        dag_id = request.args.get('dag_id')
+        dag = dagbag.get_dag(dag_id)
+        if (
+                current_app.config['LOGIN_DISABLED'] or not FILTER_BY_OWNER or OWNER_MODE != 'ldapgroup' or
+                (not current_user.is_anonymous and
+                 (dag.owner in current_user.ldap_groups or current_user.is_superuser()))
+        ):
+            return f(*args, **kwargs)
+        else:
+            flash("You do not belong to a group with privileges to access this DAG", "error")
+            return redirect(url_for('admin.index'))
+
+    return decorated_function
 
 
 def data_profiling_required(f):
@@ -669,6 +699,7 @@ class Airflow(AirflowViewMixin, BaseView):
         return wwwutils.json_response(payload)
 
     @expose('/code')
+    @ldap_group_required
     @login_required
     @provide_session
     def code(self, session=None):
@@ -690,6 +721,7 @@ class Airflow(AirflowViewMixin, BaseView):
             wrapped=conf.getboolean('webserver', 'default_wrap'))
 
     @expose('/dag_details')
+    @ldap_group_required
     @login_required
     @provide_session
     def dag_details(self, session=None):
@@ -757,6 +789,7 @@ class Airflow(AirflowViewMixin, BaseView):
         return redirect(url_for('admin.index'))
 
     @expose('/rendered')
+    @ldap_group_required
     @login_required
     @wwwutils.action_logging
     def rendered(self):
@@ -936,6 +969,7 @@ class Airflow(AirflowViewMixin, BaseView):
         return redirect(url)
 
     @expose('/task')
+    @ldap_group_required
     @login_required
     @wwwutils.action_logging
     def task(self):
@@ -1026,6 +1060,7 @@ class Airflow(AirflowViewMixin, BaseView):
             dag=dag, title=title)
 
     @expose('/xcom')
+    @ldap_group_required
     @login_required
     @wwwutils.action_logging
     @provide_session
@@ -1069,6 +1104,7 @@ class Airflow(AirflowViewMixin, BaseView):
             dag=dag, title=title)
 
     @expose('/run', methods=['POST'])
+    @ldap_group_required
     @login_required
     @wwwutils.action_logging
     @wwwutils.notify_owner
@@ -1164,6 +1200,7 @@ class Airflow(AirflowViewMixin, BaseView):
         return redirect(origin)
 
     @expose('/trigger', methods=['POST'])
+    @ldap_group_required
     @login_required
     @wwwutils.action_logging
     @wwwutils.notify_owner
@@ -1236,6 +1273,7 @@ class Airflow(AirflowViewMixin, BaseView):
         return response
 
     @expose('/clear', methods=['POST'])
+    @ldap_group_required
     @login_required
     @wwwutils.action_logging
     @wwwutils.notify_owner
@@ -1267,6 +1305,7 @@ class Airflow(AirflowViewMixin, BaseView):
                                    recursive=recursive, confirmed=confirmed, only_failed=only_failed)
 
     @expose('/dagrun_clear', methods=['POST'])
+    @ldap_group_required
     @login_required
     @wwwutils.action_logging
     @wwwutils.notify_owner
@@ -1377,6 +1416,7 @@ class Airflow(AirflowViewMixin, BaseView):
                                                  confirmed, origin)
 
     @expose('/dagrun_success', methods=['POST'])
+    @ldap_group_required
     @login_required
     @wwwutils.action_logging
     @wwwutils.notify_owner
@@ -1451,6 +1491,7 @@ class Airflow(AirflowViewMixin, BaseView):
                                               future, past, State.FAILED)
 
     @expose('/success', methods=['POST'])
+    @ldap_group_required
     @login_required
     @wwwutils.action_logging
     @wwwutils.notify_owner
@@ -1471,6 +1512,7 @@ class Airflow(AirflowViewMixin, BaseView):
                                               future, past, State.SUCCESS)
 
     @expose('/tree')
+    @ldap_group_required
     @login_required
     @wwwutils.gzipped
     @wwwutils.action_logging
@@ -1596,6 +1638,7 @@ class Airflow(AirflowViewMixin, BaseView):
             show_external_logs=bool(external_logs))
 
     @expose('/graph')
+    @ldap_group_required
     @login_required
     @wwwutils.gzipped
     @wwwutils.action_logging
@@ -1692,6 +1735,7 @@ class Airflow(AirflowViewMixin, BaseView):
             show_external_logs=bool(external_logs))
 
     @expose('/duration')
+    @ldap_group_required
     @login_required
     @wwwutils.action_logging
     @provide_session
@@ -1805,6 +1849,7 @@ class Airflow(AirflowViewMixin, BaseView):
         )
 
     @expose('/tries')
+    @ldap_group_required
     @login_required
     @wwwutils.action_logging
     @provide_session
@@ -1870,6 +1915,7 @@ class Airflow(AirflowViewMixin, BaseView):
         )
 
     @expose('/landing_times')
+    @ldap_group_required
     @login_required
     @wwwutils.action_logging
     @provide_session
@@ -1959,6 +2005,7 @@ class Airflow(AirflowViewMixin, BaseView):
         return "OK"
 
     @expose('/refresh', methods=['POST'])
+    @ldap_group_required
     @login_required
     @wwwutils.action_logging
     @provide_session
@@ -1985,6 +2032,7 @@ class Airflow(AirflowViewMixin, BaseView):
         return redirect('/')
 
     @expose('/gantt')
+    @ldap_group_required
     @login_required
     @wwwutils.action_logging
     @provide_session
@@ -2385,6 +2433,8 @@ class SlaMissModelView(wwwutils.SuperUserMixin, ModelViewOnly):
         'timestamp': {'disabled': True},
     }
 
+    def get_query(self):
+        return filter_model_entity_by_owner(SlaMiss, self.session)
 
 @provide_session
 def _connection_ids(session=None):
@@ -2764,6 +2814,9 @@ class DagRunModelView(ModelViewOnly):
     )
     form_overrides = dict(execution_date=DateTimeField)
 
+    def get_query(self):
+        return filter_model_entity_by_owner(DagRun, self.session)
+
     @action('new_delete', "Delete", "Are you sure you want to delete selected records?")
     @provide_session
     def action_new_delete(self, ids, session=None):
@@ -2888,6 +2941,9 @@ class LogModelView(ModelViewOnly):
     column_formatters = dict(
         dttm=datetime_f, execution_date=datetime_f, dag_id=dag_link)
 
+    def get_query(self):
+        return filter_model_entity_by_owner(Log, self.session)
+
 
 class TaskInstanceModelView(ModelViewOnly):
     verbose_name_plural = "task instances"
@@ -2924,6 +2980,9 @@ class TaskInstanceModelView(ModelViewOnly):
         'unixname', 'priority_weight', 'queue', 'queued_dttm', 'try_number',
         'pool', 'log_url')
     page_size = PAGE_SIZE
+
+    def get_query(self):
+        return filter_model_entity_by_owner(TaskInstance, self.session)
 
     @action('set_running', "Set state to 'running'", None)
     def action_set_running(self, ids):

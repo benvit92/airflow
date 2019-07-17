@@ -190,8 +190,8 @@ class AirflowConfigParser(ConfigParser):
         elif (
             self.getboolean("webserver", "authenticate") and
             self.get("webserver", "owner_mode").lower() == 'ldapgroup' and
-            self.get("webserver", "auth_backend") != (
-                'airflow.contrib.auth.backends.ldap_auth')
+            self.get("webserver", "auth_backend") not in ['airflow.contrib.auth.backends.ldap_auth',
+                                                          'scarlet.auth.coolblue_ldap_auth']
         ):
             raise AirflowConfigException(
                 "error: attempt at using ldapgroup "

@@ -1106,10 +1106,6 @@ class BigQueryBaseCursor(LoggingMixin):
         # Refer to this link for more details:
         #   https://cloud.google.com/bigquery/docs/reference/rest/v2/jobs#configuration.query.tableDefinitions.(key).sourceFormat
 
-        if schema_fields is None and not autodetect:
-            raise ValueError(
-                'You must either pass a schema or autodetect=True.')
-
         if src_fmt_configs is None:
             src_fmt_configs = {}
 
